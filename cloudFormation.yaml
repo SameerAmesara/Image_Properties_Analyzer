@@ -572,9 +572,6 @@ Resources:
           sudo nohup npm start &
       SecurityGroupIds:
         - !Ref Ec2SecurityGroup
-      Tags:
-        - Key: "Backup"
-          Value: "true"
 
   Ec2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -589,13 +586,13 @@ Resources:
   BackupVault:
     Type: AWS::Backup::BackupVault
     Properties:
-      BackupVaultName: MyBackupVault
+      BackupVaultName: BackupVaultForEC2
 
   BackupPlan:
     Type: AWS::Backup::BackupPlan
     Properties:
       BackupPlan:
-        BackupPlanName: MyBackupPlan
+        BackupPlanName: BackupPlanForEC2
         BackupPlanRule:
           - RuleName: DailyBackup
             TargetBackupVault: !Ref BackupVault
@@ -610,12 +607,10 @@ Resources:
     Properties:
       BackupPlanId: !Ref BackupPlan
       BackupSelection:
-        SelectionName: MyBackupSelection
+        SelectionName: BackupSelectionForEC2
         IamRoleArn: arn:aws:iam::637423241254:role/aws-service-role/backup.amazonaws.com/AWSServiceRoleForBackup
-        ListOfTags:
-          - ConditionType: "STRINGEQUALS"
-            ConditionKey: "Backup"
-            ConditionValue: "true"
+        Resources:
+          - !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${FrontendInstance}"
 
 Outputs:
   ImageUploadApiUrl:

@@ -84,28 +84,41 @@ const AnalyzeImage = (props) => {
             <Typography variant="h5" fontWeight={600}>
               Uploaded Image
             </Typography>
-            <Box
-              sx={{
-                mt: 1,
-                display: "flex",
-                maxWidth: 560,
-                maxheight: 60,
-                flexDirection: "column",
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
-              <CardMedia
-                component="img"
-                alt="Uploaded Image"
-                height="250"
-                image={imageSrc}
-                sx={{ borderRadius: "10px" }}
-              />
-              <Typography variant="h6" sx={{ mt: 2 }} fontWeight={600}>
-                {props.selectedImage}
-              </Typography>
-            </Box>
+            {isLoading ? (
+              <Box
+                sx={{
+                  mt: 1,
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                }}
+              >
+                <CircularProgress />
+              </Box>
+            ) : (
+              <Box
+                sx={{
+                  mt: 1,
+                  display: "flex",
+                  maxWidth: 560,
+                  maxheight: 60,
+                  flexDirection: "column",
+                  justifyContent: "center",
+                  alignItems: "center",
+                }}
+              >
+                <CardMedia
+                  component="img"
+                  alt="Uploaded Image"
+                  height="250"
+                  image={imageSrc}
+                  sx={{ borderRadius: "10px" }}
+                />
+                <Typography variant="h6" sx={{ mt: 2 }} fontWeight={600}>
+                  {props.selectedImage}
+                </Typography>
+              </Box>
+            )}
           </Box>
         </Paper>
       </Grid>
