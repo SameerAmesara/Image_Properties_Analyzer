@@ -548,7 +548,7 @@ Resources:
   FrontendInstance:
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType: t2.micro
+      InstanceType: t2.small
       ImageId: ami-051f8a213df8bc089
       KeyName: sameer_a2
       UserData:
