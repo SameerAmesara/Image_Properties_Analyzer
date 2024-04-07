@@ -1,0 +1,632 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template for React app created with AWS Services like S3, Lambda, Rekognition, API Gateway, EC2 instance and AWS Backup.
+
+Resources:
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: csci5409-ta-bucket
+
+  UploadImageFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: UploadImageFunction
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: arn:aws:iam::637423241254:role/LabRole
+      Code:
+        ZipFile: |
+          // Import only the required client and commands from the AWS SDK v3
+          const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+
+          // Create an S3 client instance
+          const s3Client = new S3Client();
+
+          exports.handler = async (event) => {
+              let response = { statusCode: 200, body: '' };
+              try {
+                  const { imageData, fileName } = event;
+
+                  // Convert base64 encoded image data to binary
+                  const decodedImage = Buffer.from(imageData.replace(/^data:image\/\w+;base64,/, ""), 'base64');
+                  const params = {
+                      Bucket: 'csci5409-ta-bucket',
+                      Key: fileName,
+                      Body: decodedImage,
+                      ContentType: 'image/jpeg',
+                  };
+
+                  // Use the PutObjectCommand with the send method
+                  await s3Client.send(new PutObjectCommand(params));
+
+                  response.body = JSON.stringify({ message: 'Image uploaded successfully!' });
+              } catch (error) {
+                  console.error(error);
+                  response.statusCode = 500;
+                  response.body = JSON.stringify({ error: 'Failed to upload image' });
+              }
+              return response;
+          };
+      Timeout: 30
+
+  UploadImagePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UploadImageFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UploadImageAPIGateway}/*/*
+
+  UploadImageAPIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: UploadImageAPIGateway
+
+  UploadImageResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref UploadImageAPIGateway
+      ParentId: !GetAtt UploadImageAPIGateway.RootResourceId
+      PathPart: upload
+
+  UploadImageOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref UploadImageAPIGateway
+      ResourceId: !Ref UploadImageResource
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
+  UploadImageEndpoint:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref UploadImageAPIGateway
+      ResourceId: !Ref UploadImageResource
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UploadImageFunction.Arn}/invocations
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: $input.json('$')
+      RequestParameters:
+        method.request.querystring.name: false
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: 200
+
+  UploadImageEndpointDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: UploadImageEndpoint
+    Properties:
+      RestApiId: !Ref UploadImageAPIGateway
+      StageName: prod
+
+  AnalyzeImageFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: AnalyzeImageFunction
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: arn:aws:iam::637423241254:role/LabRole
+      Code:
+        ZipFile: |
+          // Import only the required client and commands from the AWS SDK v3
+          const { RekognitionClient, DetectLabelsCommand } = require("@aws-sdk/client-rekognition");
+          // Create a Rekognition client instance
+          const rekognitionClient = new RekognitionClient();
+
+          exports.handler = async (event) => {
+              let response = { statusCode: 200, body: '' };
+              try {
+                  const { fileName } = event;
+                  const params = {
+                      Image: {
+                          S3Object: {
+                              Bucket: 'csci5409-ta-bucket',
+                              Name: fileName
+                          }
+                      },
+                      Features: ['IMAGE_PROPERTIES'],
+                      Settings: {
+                        ImageProperties: {
+                          MaxDominantColors: 5
+                        }
+                      }
+                  };
+
+                  // Detect ImageProperties in the image
+                  const detectImagePropertiesCommand = new DetectLabelsCommand(params);
+                  const detectImagePropertiesResponse = await rekognitionClient.send(detectImagePropertiesCommand);
+
+                  response.body = JSON.stringify(detectImagePropertiesResponse);
+              } catch (error) {
+                  console.error(error);
+                  response.statusCode = 500;
+                  response.body = JSON.stringify({ error: 'Failed to analyze image' });
+              }
+              return response;
+          };
+      Timeout: 30
+
+  AnalyzeImagePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AnalyzeImageFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AnalyzeImageAPIGateway}/*/*
+
+  AnalyzeImageAPIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: AnalyzeImageAPIGateway
+
+  AnalyzeImageResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AnalyzeImageAPIGateway
+      ParentId: !GetAtt AnalyzeImageAPIGateway.RootResourceId
+      PathPart: analyze
+
+  AnalyzeImageOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref AnalyzeImageAPIGateway
+      ResourceId: !Ref AnalyzeImageResource
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
+  AnalyzeImageEndpoint:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AnalyzeImageAPIGateway
+      ResourceId: !Ref AnalyzeImageResource
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AnalyzeImageFunction.Arn}/invocations
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: $input.json('$')
+      RequestParameters:
+        method.request.querystring.name: false
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: 200
+
+  AnalyzeImageEndpointDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: AnalyzeImageEndpoint
+    Properties:
+      RestApiId: !Ref AnalyzeImageAPIGateway
+      StageName: prod
+
+  GetAllImagesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetAllImagesFunction
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: arn:aws:iam::637423241254:role/LabRole
+      Code:
+        ZipFile: |
+          // Import the required clients and commands from the SDK
+          const { S3Client, ListObjectsV2Command, GetObjectCommand } = require('@aws-sdk/client-s3');
+          const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+          // Create an S3 client with your AWS region
+          const s3Client = new S3Client();
+
+          exports.handler = async (event) => {
+              let response = { statusCode: 200, body: '' };
+              try {
+                  const params = {
+                      Bucket: 'csci5409-ta-bucket',
+                  };
+                  // Retrieve the list of objects (files) in the bucket
+                  const s3Response = await s3Client.send(new ListObjectsV2Command(params));
+
+                  if (!s3Response.Contents) {
+                      throw new Error("No contents found in the bucket");
+                  }
+
+                  const imageFiles = s3Response.Contents.filter(file => file.Key.match(/\.(jpg|jpeg|png|gif)$/i));
+
+                  const presignedUrls = await Promise.all(imageFiles.map(async (file) => {
+                      const url = await getSignedUrl(s3Client, new GetObjectCommand({
+                          Bucket: params.Bucket,
+                          Key: file.Key,
+                      }), { expiresIn: 1200 }); // Expires in 1200 seconds (20 minutes)
+
+                      return {
+                          fileName: file.Key,
+                          url: url
+                      };
+                  }));
+
+                  response.body = JSON.stringify({ images: presignedUrls });
+              } catch (error) {
+                  console.error(error);
+                  response.statusCode = 500;
+                  response.body = JSON.stringify({ error: 'Failed to process request' });
+              }
+              return response;
+          };
+      Timeout: 30
+
+  GetAllImagesFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetAllImagesFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GetAllImagesAPIGateway}/*/*
+
+  GetAllImagesAPIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: GetAllImagesAPIGateway
+
+  GetAllImagesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref GetAllImagesAPIGateway
+      ParentId: !GetAtt GetAllImagesAPIGateway.RootResourceId
+      PathPart: fetch-all
+
+  GetAllImagesOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref GetAllImagesAPIGateway
+      ResourceId: !Ref GetAllImagesResource
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
+  GetAllImagesEndpoint:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GetAllImagesAPIGateway
+      ResourceId: !Ref GetAllImagesResource
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetAllImagesFunction.Arn}/invocations
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: $input.json('$')
+      RequestParameters:
+        method.request.querystring.name: false
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: 200
+
+  GetAllImagesEndpointDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: GetAllImagesEndpoint
+    Properties:
+      RestApiId: !Ref GetAllImagesAPIGateway
+      StageName: prod
+
+  GetImageFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetImageFunction
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: arn:aws:iam::637423241254:role/LabRole
+      Code:
+        ZipFile: |
+          // Import only the required modules from AWS SDK v3
+          const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
+
+          // Create an S3 client instance
+          const s3Client = new S3Client();
+
+          exports.handler = async (event) => {
+              let response = { statusCode: 200, body: '' };
+              try {
+                  const { fileName } = event.queryStringParameters;
+                  if (!fileName) {
+                      throw new Error("File name is required");
+                  }
+                  const params = {
+                      Bucket: 'csci5409-ta-bucket',
+                      Key: fileName,
+                  };
+
+                  // Use the GetObjectCommand and send method to retrieve the object
+                  const s3Response = await s3Client.send(new GetObjectCommand(params));
+                  
+                  // Since AWS SDK v3 uses streams for body in Node.js, we need to convert it to a string
+                  const chunks = [];
+                  for await (const chunk of s3Response.Body) {
+                      chunks.push(chunk);
+                  }
+                  const imageData = Buffer.concat(chunks).toString('base64');
+
+                  response.body = JSON.stringify({ image: imageData });
+              } catch (error) {
+                  console.error(error);
+                  response.statusCode = 500;
+                  response.body = JSON.stringify({ error: 'Failed to retrieve image' });
+              }
+              return response;
+          };
+      Timeout: 30
+
+  GetImageFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetImageFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GetImageAPIGateway}/*/*
+
+  GetImageAPIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: GetImageAPIGateway
+
+  GetImageResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref GetImageAPIGateway
+      ParentId: !GetAtt GetImageAPIGateway.RootResourceId
+      PathPart: fetch
+
+  GetImageOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref GetImageAPIGateway
+      ResourceId: !Ref GetImageResource
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: Empty
+
+  GetImageEndpoint:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref GetImageAPIGateway
+      ResourceId: !Ref GetImageResource
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetImageFunction.Arn}/invocations
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: |
+            {
+              "queryStringParameters": {
+                "fileName": "$input.params('fileName')"
+              }
+            }
+      RequestParameters:
+        method.request.querystring.fileName: true
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: 200
+
+  GetImageEndpointDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: GetImageEndpoint
+    Properties:
+      RestApiId: !Ref GetImageAPIGateway
+      StageName: prod
+
+  FrontendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-051f8a213df8bc089
+      KeyName: sameer_a2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum install -y git
+          sudo yum install -y nodejs
+
+          git clone https://github.com/SameerAmesara/Image_Properties_Analyzer.git /home/ec2-user/image-properties-analyzer-app
+
+          # Execute your deployment commands
+          cd /home/ec2-user/image-properties-analyzer-app
+
+          echo "export const API_IMAGE_UPLOAD='https://${UploadImageAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/upload';" >> /home/ec2-user/image-properties-analyzer-app/src/resources/apiUrls.js
+          echo "export const API_IMAGE_ANALYSIS='https://${AnalyzeImageAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/analyze';" >> /home/ec2-user/image-properties-analyzer-app/src/resources/apiUrls.js
+          echo "export const API_GET_IMAGES='https://${GetAllImagesAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/fetch-all';" >> /home/ec2-user/image-properties-analyzer-app/src/resources/apiUrls.js
+          echo "export const API_GET_IMAGE='https://${GetImageAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/fetch';" >> /home/ec2-user/image-properties-analyzer-app/src/resources/apiUrls.js
+
+          sudo npm install
+          sudo nohup npm start &
+      SecurityGroupIds:
+        - !Ref Ec2SecurityGroup
+      Tags:
+        - Key: "Backup"
+          Value: "true"
+
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all inbound traffic
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+  BackupVault:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      BackupVaultName: MyBackupVault
+
+  BackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: MyBackupPlan
+        BackupPlanRule:
+          - RuleName: DailyBackup
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: cron(0 12 * * ? *)
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 120
+            Lifecycle:
+              DeleteAfterDays: 30
+
+  BackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref BackupPlan
+      BackupSelection:
+        SelectionName: MyBackupSelection
+        IamRoleArn: arn:aws:iam::637423241254:role/aws-service-role/backup.amazonaws.com/AWSServiceRoleForBackup
+        ListOfTags:
+          - ConditionType: "STRINGEQUALS"
+            ConditionKey: "Backup"
+            ConditionValue: "true"
+
+Outputs:
+  ImageUploadApiUrl:
+    Description: "URL for Image Upload API"
+    Value: !Sub "https://${UploadImageAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/upload"
+  ImageAnalysisApiUrl:
+    Description: "URL for Image Analysis API"
+    Value: !Sub "https://${AnalyzeImageAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/analyze"
+  GetImagesApiUrl:
+    Description: "URL for Get Images API"
+    Value: !Sub "https://${GetAllImagesAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/fetch-all"
+  GetImageApiUrl:
+    Description: "URL for Get Image API"
+    Value: !Sub "https://${GetImageAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/fetch"
